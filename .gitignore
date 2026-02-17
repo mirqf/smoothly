@@ -15,7 +15,7 @@ wheels/
 
 # Databases
 *.sqlite3
-*.db
+# *.db
 /instance/
 
 # OS and editor files
