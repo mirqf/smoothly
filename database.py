@@ -15,7 +15,7 @@ def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER UNIQUE NOT NULL,
             username TEXT,
-            language TEXT DEFAULT 'English',
+            language TEXT DEFAULT 'en',
             verification_status INTEGER DEFAULT 0,
             verification_pending INTEGER DEFAULT 0
         )
@@ -33,45 +33,49 @@ def user_exists(user_id: int) -> bool:
     return exists
 
 def add_user(user_id: int, username: Optional[str], language: str):
+    """language: two-letter code (en, ru, es, ar)."""
+    lang = (language or "en").strip().lower()[:2]
+    if lang not in ("en", "ru", "es", "ar"):
+        lang = "en"
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute(
         "INSERT OR REPLACE INTO users (user_id, username, language, verification_status, verification_pending) VALUES (?, ?, ?, 0, 0)",
-        (user_id, username, language)
+        (user_id, username, lang)
     )
     conn.commit()
     conn.close()
 
 def update_user_language(user_id: int, username: Optional[str], language: str):
-    """Обновляет язык и username пользователя без изменения статуса верификации"""
+    """Обновляет язык (двухбуквенный код) и username без изменения статуса верификации."""
+    lang = (language or "en").strip().lower()[:2]
+    if lang not in ("en", "ru", "es", "ar"):
+        lang = "en"
     conn = get_connection()
     cursor = conn.cursor()
-    
-    # Проверяем, существует ли пользователь
     cursor.execute("SELECT verification_status, verification_pending FROM users WHERE user_id = ?", (user_id,))
     result = cursor.fetchone()
-    
     if result:
-        # Пользователь существует, сохраняем его статусы верификации
-        verification_status, verification_pending = result
         cursor.execute(
             "UPDATE users SET username = ?, language = ? WHERE user_id = ?",
-            (username, language, user_id)
+            (username, lang, user_id)
         )
     else:
-        # Новый пользователь
         cursor.execute(
             "INSERT INTO users (user_id, username, language, verification_status, verification_pending) VALUES (?, ?, ?, 0, 0)",
-            (user_id, username, language)
+            (user_id, username, lang)
         )
     
     conn.commit()
     conn.close()
 
 def update_language(user_id: int, language: str):
+    lang = (language or "en").strip().lower()[:2]
+    if lang not in ("en", "ru", "es", "ar"):
+        lang = "en"
     conn = get_connection()
     cursor = conn.cursor()
-    cursor.execute("UPDATE users SET language = ? WHERE user_id = ?", (language, user_id))
+    cursor.execute("UPDATE users SET language = ? WHERE user_id = ?", (lang, user_id))
     conn.commit()
     conn.close()
 
@@ -81,7 +85,12 @@ def get_user_language(user_id: int) -> str:
     cursor.execute("SELECT language FROM users WHERE user_id = ?", (user_id,))
     result = cursor.fetchone()
     conn.close()
-    return result[0] if result else "English"
+    raw = result[0] if result else "en"
+    raw = (raw or "en").strip().lower()
+    code_map = {"english": "en", "russian": "ru", "spanish": "es", "hindi": "en", "arabic": "ar"}
+    if raw in ("en", "ru", "es", "ar"):
+        return raw
+    return code_map.get(raw, "en")
 
 def is_verification_pending(user_id: int) -> bool:
     conn = get_connection()
