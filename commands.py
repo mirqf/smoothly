@@ -17,7 +17,7 @@ from database import (
     get_user_language,
     update_user_language,
 )
-from locale import S
+from i18n import S
 from signal_photos import get_signal_photo_file_id
 
 dp = Router()
