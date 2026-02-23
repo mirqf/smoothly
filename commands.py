@@ -102,6 +102,22 @@ async def get_signals(callback: types.CallbackQuery, state: FSMContext):
     else:
         await throw_unauthorized(callback.message, lang)
 
+@dp.callback_query(F.data == "verify_account")
+async def verify_callback(callback: types.CallbackQuery, state: FSMContext):
+    message = callback.message
+    user_id = message.from_user.id
+    lang = get_user_language(user_id)
+
+    if is_verified(user_id):
+        await message.reply(S("already_verified", lang))
+        return
+    if is_verification_pending(user_id):
+        await message.reply(S("verification_pending", lang))
+        return
+
+    await state.set_state(VerificationProcess.waiting_files)
+    await message.reply(S("verify_request", lang))
+
 
 @dp.message(Command("verify"))
 async def verify(message: types.Message, state: FSMContext):
@@ -183,7 +199,13 @@ async def approve_verification(callback: types.CallbackQuery, bot: Bot):
     update_verification_status(user_id, True)
     set_verification_pending(user_id, False)
 
-    await bot.send_message(chat_id=user_id, text=S("accepted", lang))
+    builder = InlineKeyboardBuilder()
+    builder.button(text = S("btn_get_signals", lang), callback_data = "get_signals")
+    await bot.send_message(
+        chat_id=user_id, 
+        text=S("accepted", lang)
+    ),
+    
 
     msg = S("moderator_approved", MODERATOR_LANG)
     await callback.answer(msg)
@@ -216,7 +238,7 @@ async def throw_unauthorized(message: types.Message, lang_code: str):
         text=S("btn_create_account", lang_code),
         url="https://u3.shortink.io/register?utm_campaign=839002&utm_source=affiliate&utm_medium=sr&a=NUYNmfmAkKYMaY&ac=scanner-trade-bot&code=ROS149",
     )
-    builder.button(text=S("btn_support", lang_code), url="https://t.me/ScannerManager")
+    builder.button(text=S("btn_support", lang_code), callback_data="verify_account")
     builder.adjust(1)
 
     await message.answer(
