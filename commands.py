@@ -203,7 +203,8 @@ async def approve_verification(callback: types.CallbackQuery, bot: Bot):
     builder.button(text = S("btn_get_signals", lang), callback_data = "get_signals")
     await bot.send_message(
         chat_id=user_id, 
-        text=S("accepted", lang)
+        text=S("accepted", lang),
+        reply_markup = builder.as_markup()
     ),
     
 
