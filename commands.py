@@ -5,6 +5,10 @@ from aiogram.filters.command import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.utils.keyboard import InlineKeyboardBuilder
+from collections import defaultdict
+from aiogram.types import InputMediaPhoto, InputMediaVideo
+
+_verification_albums: dict[str, list] = defaultdict(list)
 
 from database import (
     user_exists,
@@ -12,17 +16,18 @@ from database import (
     is_verification_pending,
     set_verification_pending,
     get_user_info,
+    get_user_id_by_username,
     update_verification_status,
     is_verified,
     get_user_language,
     update_user_language,
 )
 from i18n import S
-from signal_photos import get_signal_photo_file_id
+from signal_photos import get_signal_photo_file_id, load_signal_file_ids
 
 dp = Router()
 
-MODERATOR_CHAT_ID = 8456243771
+MODERATOR_CHAT_ID = 5081716116
 MODERATOR_LANG = "ru"
 
 # FSM
@@ -34,6 +39,8 @@ class VerificationProcess(StatesGroup):
 
 class ModeratorReview(StatesGroup):
     reviewing = State()
+
+_verification_media_scheduled: set[str] = set()
 
 
 def get_language_keyboard():
@@ -73,8 +80,9 @@ async def select_language(callback: types.CallbackQuery, state: FSMContext):
     builder.button(text=S("btn_support", lang_code), url="https://t.me/ScannerManager")
     builder.adjust(1, 2)
 
-    await callback.message.answer(
-        text=S("start_after_lang", lang_code),
+    ids = load_signal_file_ids()
+    await callback.message.answer_photo(
+        photo = ids.get("welcome"),
         reply_markup=builder.as_markup(),
     )
 
@@ -105,7 +113,7 @@ async def get_signals(callback: types.CallbackQuery, state: FSMContext):
 @dp.callback_query(F.data == "verify_account")
 async def verify_callback(callback: types.CallbackQuery, state: FSMContext):
     message = callback.message
-    user_id = message.from_user.id
+    user_id = message.chat.id
     lang = get_user_language(user_id)
 
     if is_verified(user_id):
@@ -116,7 +124,7 @@ async def verify_callback(callback: types.CallbackQuery, state: FSMContext):
         return
 
     await state.set_state(VerificationProcess.waiting_files)
-    await message.reply(S("verify_request", lang))
+    await message.reply(S("verify_request", lang), parse_mode="HTML")
 
 
 @dp.message(Command("verify"))
@@ -132,63 +140,139 @@ async def verify(message: types.Message, state: FSMContext):
         return
 
     await state.set_state(VerificationProcess.waiting_files)
-    await message.reply(S("verify_request", lang))
-
+    await message.reply(S("verify_request", lang), parse_mode="HTML")
 
 @dp.message(VerificationProcess.waiting_files)
-async def receive_verification_files(message: types.Message, state: FSMContext, bot: Bot):
+async def receive_verification_files(
+    message: types.Message,
+    state: FSMContext,
+    bot: Bot
+):
     user_id = message.from_user.id
     lang = get_user_language(user_id)
     user_info = get_user_info(user_id)
 
-    if not message.document and not message.photo:
-        await message.reply(S("need_file", lang))
-        return
-
     if not user_info:
         await message.reply(S("user_not_found", lang))
+        return
+    
+    if not message.photo and not message.video:
+        await message.reply(S("need_file", lang))
         return
 
     user_id_db, username = user_info
     username_display = username if username else S("na", MODERATOR_LANG)
-    moderator_text = (
-        f"{S('moderator_new_verification', MODERATOR_LANG)}\n\n"
-        f"{S('moderator_user_id', MODERATOR_LANG)} <code>{user_id_db}</code>\n"
-        f"{S('moderator_username', MODERATOR_LANG)} <code>@{username_display}</code>"
-    )
 
-    builder = InlineKeyboardBuilder()
-    builder.button(text=S("btn_approve", MODERATOR_LANG), callback_data=f"approve_{user_id_db}")
-    builder.button(text=S("btn_reject", MODERATOR_LANG), callback_data=f"reject_{user_id_db}")
-    builder.adjust(2)
+    # -------------------------------------------------
+    # Если это альбом (media_group)
+    # -------------------------------------------------
+    if message.media_group_id:
 
-    if message.document:
-        await bot.send_document(
-            chat_id=MODERATOR_CHAT_ID,
-            document=message.document.file_id,
-            caption=moderator_text,
-            parse_mode="HTML",
-            reply_markup=builder.as_markup(),
-        )
-    elif message.photo:
-        await bot.send_photo(
-            chat_id=MODERATOR_CHAT_ID,
-            photo=message.photo[-1].file_id,
-            caption=moderator_text,
-            parse_mode="HTML",
-            reply_markup=builder.as_markup(),
-        )
+        group_id = message.media_group_id
+
+        if group_id not in _verification_albums:
+            _verification_albums[group_id] = {
+                "user_id": user_id,
+                "user_id_db": user_id_db,
+                "username_display": username_display,
+                "media": [],
+                "caption": message.caption or "",
+            }
+
+        album = _verification_albums[group_id]
+
+        # Добавляем файл
+        if message.photo:
+            album["media"].append(
+                InputMediaPhoto(media=message.photo[-1].file_id)
+            )
+        elif message.video:
+            album["media"].append(
+                InputMediaVideo(media=message.video.file_id)
+            )
+
+        # Если есть caption — сохраняем
+        if message.caption:
+            album["caption"] = message.caption
+
+        # Планируем отправку только один раз
+        if len(album["media"]) == 1:
+
+            async def send_album():
+                await asyncio.sleep(1)  # ждём пока Telegram пришлёт все элементы
+
+                album_data = _verification_albums.pop(group_id, None)
+                if not album_data:
+                    return
+
+                media_list = album_data["media"]
+
+                media_list[0].caption = album_data['caption'] or ''
+
+                # 1️⃣ Отправляем альбом
+                await bot.send_media_group(
+                    chat_id=MODERATOR_CHAT_ID,
+                    media=media_list,
+                )
+
+                # 2️⃣ Отправляем кнопки отдельным сообщением
+
+                mod_text = (
+                    f"{S('moderator_new_verification', MODERATOR_LANG)}\n\n"
+                    f"{S('moderator_user_id', MODERATOR_LANG)} <code>{user_id_db}</code>\n" 
+                    f"{S('moderator_username', MODERATOR_LANG)} @{username_display}"
+                )
+                builder = InlineKeyboardBuilder()
+                builder.button(text=S("btn_approve", MODERATOR_LANG), callback_data=f"approve_{album_data['user_id_db']}")
+                builder.button(text=S("btn_reject", MODERATOR_LANG), callback_data=f"reject_{album_data['user_id_db']}")
+
+                await bot.send_message(
+                    chat_id=MODERATOR_CHAT_ID,
+                    text=mod_text,
+                    reply_markup=builder.as_markup(),
+                    parse_mode = "HTML"
+                )
+
+                set_verification_pending(user_id, True)
+
+                await bot.send_message(
+                    chat_id=user_id,
+                    text=S("files_received", lang),
+                )
+
+                await state.clear()
+
+            asyncio.create_task(send_album())
+
     else:
+
+        await message.copy_to(
+            chat_id=MODERATOR_CHAT_ID,
+            caption=message.caption or '',
+            parse_mode="HTML",
+        )
+
+        mod_text = (
+            f"{S('moderator_new_verification', MODERATOR_LANG)}\n\n"
+            f"{S('moderator_user_id', MODERATOR_LANG)} <code>{user_id_db}</code>\n" 
+            f"{S('moderator_username', MODERATOR_LANG)} @{username_display}"
+        )
+        builder = InlineKeyboardBuilder()
+        builder.button(text=S("btn_approve", MODERATOR_LANG), callback_data=f"approve_{user_id_db}")
+        builder.button(text=S("btn_reject", MODERATOR_LANG), callback_data=f"reject_{user_id_db}",)
+
         await bot.send_message(
             chat_id=MODERATOR_CHAT_ID,
-            text=moderator_text,
-            parse_mode="HTML",
+            text=mod_text,
             reply_markup=builder.as_markup(),
+            parse_mode = "HTML"
         )
 
-    set_verification_pending(user_id, True)
-    await message.reply(S("files_received", lang))
-    await state.clear()
+        set_verification_pending(user_id, True)
+
+        await message.reply(S("files_received", lang))
+        await state.clear()
+
 
 
 @dp.callback_query(F.data.startswith("approve_"))
@@ -210,8 +294,8 @@ async def approve_verification(callback: types.CallbackQuery, bot: Bot):
 
     msg = S("moderator_approved", MODERATOR_LANG)
     await callback.answer(msg)
-    new_caption = (callback.message.caption or "") + "\n\n" + msg
-    await callback.message.edit_caption(caption=new_caption, reply_markup=None)
+    new_text = (callback.message.text or "") + "\n\n" + msg
+    await callback.message.edit_text(text=new_text, reply_markup=None, parse_mode="HTML")
 
 
 @dp.callback_query(F.data.startswith("reject_"))
@@ -226,8 +310,47 @@ async def reject_verification(callback: types.CallbackQuery, bot: Bot):
 
     msg = S("moderator_rejected", MODERATOR_LANG)
     await callback.answer(msg)
-    new_caption = (callback.message.caption or "") + "\n\n" + msg
-    await callback.message.edit_caption(caption=new_caption, reply_markup=None)
+    new_text = (callback.message.text or "") + "\n\n" + msg
+    await callback.message.edit_text(text=new_text, reply_markup=None, parse_mode="HTML")
+
+
+@dp.message(Command("verification"))
+async def verification_cmd(message: types.Message):
+    if message.chat.id != MODERATOR_CHAT_ID:
+        return
+    parts = (message.text or "").strip().split()
+    if len(parts) != 3:
+        await message.reply(
+            S("verification_usage", MODERATOR_LANG),
+            parse_mode="HTML",
+        )
+        return
+    _, username_part, status_str = parts
+    if status_str not in ("0", "1"):
+        await message.reply(
+            S("verification_usage", MODERATOR_LANG),
+            parse_mode="HTML",
+        )
+        return
+    user_id = get_user_id_by_username(username_part)
+    if user_id is None:
+        await message.reply(
+            S("verification_user_not_found", MODERATOR_LANG).format(
+                username=username_part.lstrip("@") or username_part
+            ),
+            parse_mode="HTML",
+        )
+        return
+    status = status_str == "1"
+    update_verification_status(user_id, status)
+    set_verification_pending(user_id, False)
+    await message.reply(
+        S("verification_done", MODERATOR_LANG).format(
+            username=username_part.lstrip("@") or username_part,
+            status=S("verification_status_yes", MODERATOR_LANG) if status else S("verification_status_no", MODERATOR_LANG),
+        ),
+        parse_mode="HTML",
+    )
 
 
 signals = [("HIGHER", "S15"), ("HIGHER", "S5"), ("LOWER", "S15"), ("LOWER", "S5")]
@@ -239,7 +362,7 @@ async def throw_unauthorized(message: types.Message, lang_code: str):
         text=S("btn_create_account", lang_code),
         url="https://u3.shortink.io/register?utm_campaign=839002&utm_source=affiliate&utm_medium=sr&a=NUYNmfmAkKYMaY&ac=scanner-trade-bot&code=ROS149",
     )
-    builder.button(text=S("btn_support", lang_code), callback_data="verify_account")
+    builder.button(text=S("btn_verify_account", lang_code), callback_data="verify_account")
     builder.adjust(1)
 
     await message.answer(

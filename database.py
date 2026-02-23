@@ -129,3 +129,21 @@ def get_user_info(user_id: int) -> Optional[Tuple]:
     result = cursor.fetchone()
     conn.close()
     return result
+
+
+def get_user_id_by_username(username: str) -> Optional[int]:
+    """Возвращает user_id по username. В БД username хранится без @. Сравнение без учёта регистра."""
+    if not username or not username.strip():
+        return None
+    raw = username.strip().lstrip("@")
+    if not raw:
+        return None
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT user_id FROM users WHERE LOWER(TRIM(username)) = LOWER(?)",
+        (raw,),
+    )
+    result = cursor.fetchone()
+    conn.close()
+    return result[0] if result else None

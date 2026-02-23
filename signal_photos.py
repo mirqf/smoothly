@@ -26,6 +26,7 @@ ASSETS_DIR = PROJECT_ROOT / "assets"
 EXTENSIONS = (".png", ".jpg", ".jpeg", ".webp")
 BUY_NAME = "bot_buy"
 SELL_NAME = "bot_sell"
+WELCOME_NAME = "bot_welcome"
 
 
 def load_signal_file_ids() -> dict[str, Optional[str]]:
@@ -38,14 +39,15 @@ def load_signal_file_ids() -> dict[str, Optional[str]]:
             data = json.load(f)
         out["buy"] = data.get("buy") or None
         out["sell"] = data.get("sell") or None
+        out["welcome"] = data.get("welcome") or None
     except Exception:
         pass
     return out
 
 
-def save_signal_file_ids(buy: Optional[str], sell: Optional[str]) -> None:
+def save_signal_file_ids(buy: Optional[str], sell: Optional[str], welcome: Optional[str]) -> None:
     """Сохраняет file_id в signal_file_ids.json."""
-    data = {"buy": buy, "sell": sell}
+    data = {"buy": buy, "sell": sell, "welcome": welcome}
     with open(IDS_PATH, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
@@ -65,7 +67,7 @@ async def ensure_signal_photos(bot: Bot, upload_chat_id: int) -> dict[str, Optio
     """
     ids = load_signal_file_ids()
 
-    for key, name in [("buy", BUY_NAME), ("sell", SELL_NAME)]:
+    for key, name in [("buy", BUY_NAME), ("sell", SELL_NAME), ("welcome", WELCOME_NAME)]:
         if ids.get(key):
             continue
         path = _find_asset(name)
@@ -76,7 +78,7 @@ async def ensure_signal_photos(bot: Bot, upload_chat_id: int) -> dict[str, Optio
             msg = await bot.send_photo(upload_chat_id, photo=photo)
             file_id = msg.photo[-1].file_id
             ids[key] = file_id
-            save_signal_file_ids(ids.get("buy"), ids.get("sell"))
+            save_signal_file_ids(ids.get("buy"), ids.get("sell"), ids.get("welcome"))
         except Exception:
             pass
 
